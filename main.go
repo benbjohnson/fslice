@@ -6,6 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"os"
 	"strings"
 )
@@ -24,6 +26,7 @@ func run() error {
 	// Parse arguments.
 	fs := flag.NewFlagSet("fslice", flag.ContinueOnError)
 	fs.Usage = func() {}
+	out := fs.String("o", "", "output file")
 	start := fs.String("start", "", "starting delimiter")
 	end := fs.String("end", "", "ending delimiter")
 	header := fs.String("header", "", "header line")
@@ -46,23 +49,37 @@ func run() error {
 	*end = strings.TrimSpace(*end)
 
 	// Process each path.
+	var buf bytes.Buffer
 	for _, path := range paths {
-		if err := process(path, *start, *end, *header); err != nil {
+		if err := process(&buf, path, *start, *end, *header); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	// Write to STDOUT if no file specified.
+	if *out == "" {
+		buf.WriteTo(os.Stdout)
+		return nil
+	}
+
+	// If writing to a file, ensure it hasn't changed.
+	data := buf.Bytes()
+	if b, err := ioutil.ReadFile(*out); err != nil && !os.IsNotExist(err) {
+		return err
+	} else if bytes.Equal(data, b) {
+		return nil // unchanged, exit
+	}
+
+	return ioutil.WriteFile(*out, data, 0666)
 }
 
-func process(path, start, end, header string) error {
+func process(w io.Writer, path, start, end, header string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	var buf bytes.Buffer
 	var inBlock bool
 
 	scanner := bufio.NewScanner(f)
@@ -73,27 +90,26 @@ func process(path, start, end, header string) error {
 		if inBlock && strings.TrimSpace(line) == end {
 			inBlock = false
 			if header != "" {
-				fmt.Fprintln(&buf, "")
+				fmt.Fprintln(w, "")
 			}
 			continue
 		} else if !inBlock && strings.TrimSpace(line) == start {
 			inBlock = true
 			if header != "" {
-				fmt.Fprintln(&buf, strings.Replace(header, "$FILENAME", path, -1))
+				fmt.Fprintln(w, strings.Replace(header, "$FILENAME", path, -1))
 			}
 			continue
 		}
 
 		// Print all lines while we're in a start/end block.
 		if inBlock {
-			fmt.Fprintln(&buf, line)
+			fmt.Fprintln(w, line)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
 	}
 
-	buf.WriteTo(os.Stdout)
 	return nil
 }
 
